@@ -1,0 +1,8 @@
+discord
+discord[voice]
+ffmpeg
+python-dotenv
+yt-dlp
+async_timeout
+validators
+openai
