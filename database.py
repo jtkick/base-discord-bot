@@ -415,8 +415,10 @@ class Database:
             del activity_stats[None]
         return activity_stats
 
-    def get_next_song(self, users: list[int], channels: list[int], limit: int = 100, cutoff: datetime = datetime.now() - timedelta(hours=1)):
+    def get_next_song(self, users: list[int], channels: list[int], limit: int = 100, cutoff: datetime = None):
         
+        _cutoff = datetime.now() - timedelta(hours=1) if not cutoff else cutoff
+
         print("users:", users)
         print("channels:", channels)
 
@@ -466,7 +468,7 @@ class Database:
             """ % (
                 ",".join(str(id) for id in user_ids),
                 ",".join(str(id) for id in channel_ids)
-            ), (cutoff, limit))
+            ), (_cutoff, limit))
             old_song_plays = cursor.fetchall()
 
         # Compile results into cleaner list of dicts
@@ -490,7 +492,7 @@ class Database:
                 GROUP BY
                     song_title,
                     song_artist;
-            """ % (",".join(str(id) for id in channel_ids)), (cutoff, ))
+            """ % (",".join(str(id) for id in channel_ids)), (_cutoff, ))
             recent_song_plays = cursor.fetchall()
         print("recent:", recent_song_plays)
 
@@ -535,7 +537,9 @@ class Database:
                            "song title is the 'title' key and the artist is "\
                            "the 'artist' key. I want you to return a song "\
                            "title and artist that you would recommend based "\
-                           "on the given songs. You should give me only a bare text "\
+                           "on the given songs. Don't be afraid to branch out "\
+                           "and vary songs; the same artist should not be "\
+                           "repeated more than twice. You should give me only a bare text "\
                            "string formatted as a Python dict where the "\
                            "'title' key is the song title, and the 'artist' "\
                            "key is the song's artist. Don't add anything other "\

@@ -88,28 +88,37 @@ class YTDLSource(discord.PCMVolumeTransformer):
         loop = ctx.bot.loop if ctx else asyncio.get_event_loop()
 
         # If we got a YouTube link, get the video title for the song search
-        if validators.url(search):
+        logger.debug("Search parameter:", search)
+        if isinstance(search, dict):
+            search_term = search["title"]
+            artist_str = f"&artist={search["artist"]}"
+        elif isinstance(search, str) and validators.url(search):
             with YoutubeDL() as ydl:
                 info = ydl.extract_info(search, download=False)
                 search_term = info.get("title", "")
+            artist_str = ""
         else:
             search_term = search
+            artist_str = ""
 
         # Get song metadata
         logger.info(f"Searching LastFM for: '{search_term}'")
         url = f"http://ws.audioscrobbler.com/2.0/?method=track.search&"\
-              f"track={search_term}&api_key={LASTFM_API_KEY}&format=json"
+              f"track={search_term}{artist_str}&api_key={LASTFM_API_KEY}&format=json"
         response = requests.get(url)
         lastfm_data = response.json()
         # Let's get the first result, if any
-        if lastfm_data['results']['trackmatches']['track']:
-            track = lastfm_data['results']['trackmatches']['track'][0]
-            artist = track['artist']
-            song_title = track['name']
+        if not lastfm_data['results']['trackmatches']['track']:
+            raise RuntimeError("LastFM returned no results")
+        track = lastfm_data['results']['trackmatches']['track'][0]
+        logger.debug("LastFM match: ", track)
+        artist = track['artist']
+        song_title = track['name']
 
         # Adjust search term if we didn't get a URL
-        if not validators.url(search):
+        if isinstance(search, dict) and not validators.url(search):
             search = f"{song_title} {artist} official audio"
+            logger.debug(f"Search string is not a URL; converting to {search}")
 
         # Get YouTube video source
         logger.info(f"Getting YouTube video: {search_term}")
@@ -428,26 +437,23 @@ class MusicPlayer:
                     "Queue is empty and DJ mode is on. Picking song at random"
                 )
                 try:
-
-                    # TEST
                     user_ids = [m.id for m in self._channel.members]
                     channel_ids = [c.id for c in self._channel.guild.channels]
                     song = self.bot.db.get_next_song(users=user_ids, channels=channel_ids)
-                    search = f"{song["artist"]} {song["title"]}"
 
                     source = await YTDLSource.create_source(
                         None,
-                        search,
+                        song,
                         download=True,
                     )
                     if not source:
                         raise RuntimeError("Could not get YouTube source.")
                 except Exception as e:
-                    # Something's wrong, turn off DJ mode to prevent infinite
-                    # loop
-                    self.dj_mode = False
-                    print(e)
-                    await self._channel.send("Failed to get YouTube source.")
+                    # # Something's wrong, turn off DJ mode to prevent infinite
+                    # # loop
+                    # self.dj_mode = False
+                    logger.error(e)
+                    # await self._channel.send(str(e))
 
             # For the time being, we're going to use 'None' to signal to the
             # player that it should go back around and check for a song again,
