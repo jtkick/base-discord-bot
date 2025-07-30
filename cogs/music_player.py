@@ -3,6 +3,7 @@ import atexit
 import datetime
 import discord
 from discord.ext import commands
+from discord import app_commands
 import enum
 import random
 import asyncio
@@ -20,15 +21,12 @@ import yt_dlp
 from yt_dlp import YoutubeDL
 import logging
 
+import database
+
 logger = logging.getLogger("music_player")
 
 # Get API key for last.fm
 LASTFM_API_KEY = os.getenv("LASTFM_API_KEY")
-
-# TEMORARY LIST OF SONGS
-songs = [
-    [REDACTED]
-]
 
 # Suppress noise about console usage from errors
 # yt_dlp.utils.bug_reports_message = lambda: ""
@@ -86,15 +84,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
         return self.__getattribute__(item)
 
     @classmethod
-    async def create_source(
-        cls,
-        ctx,
-        search: str,
-        *,
-        download=False,
-        artist="",
-        song_title="",
-    ):
+    async def create_source(cls, ctx, search: str, *, download=False):
         loop = ctx.bot.loop if ctx else asyncio.get_event_loop()
 
         # If we got a YouTube link, get the video title for the song search
@@ -246,6 +236,24 @@ class MusicPlayer:
         logger.info("Updating 'Now Playing' message")
         await self.bot.wait_until_ready()
         async with self._guild_lock:
+            # # Create new 'Now Playing' message
+            # if self._state is self.State.IDLE:
+            #     embed = discord.Embed(
+            #         title=f"◻️  Idle", color=discord.Color.light_gray()
+            #     )
+            # elif self._state is self.State.PLAYING:
+            #     embed = discord.Embed(
+            #         title=f"▶️  Now Playing", color=discord.Color.blue()
+            #     )
+            # elif self._state is self.State.PAUSED:
+            #     embed = discord.Embed(
+            #         title=f"⏸️  Paused", color=discord.Color.light_gray()
+            #     )
+            # else:
+            #     embed = discord.Embed(
+            #         title="UNKNOWN STATE", color=discord.Color.red()
+            #     )
+
             # Create new 'Now Playing' message
             if self._state is self.State.IDLE:
                 embed = discord.Embed(
@@ -253,28 +261,52 @@ class MusicPlayer:
                 )
             elif self._state is self.State.PLAYING:
                 embed = discord.Embed(
-                    title=f"▶️  Now Playing", color=discord.Color.blue()
+                    title=f"'{self.current.song_title}' by {self.current.artist}",
+                    url=self.current.web_url,
+                    color=discord.Color.green()
                 )
             elif self._state is self.State.PAUSED:
                 embed = discord.Embed(
-                    title=f"⏸️  Paused", color=discord.Color.light_gray()
+                    title=f"'{self.current.song_title}' by {self.current.artist}",
+                    url=self.current.web_url,
+                    color=discord.Color.green()
                 )
             else:
                 embed = discord.Embed(
                     title="UNKNOWN STATE", color=discord.Color.red()
                 )
 
+            if self._state is self.State.IDLE:
+                pass
+            elif self._state is self.State.PLAYING:
+                embed.set_author(
+                    name="Now Playing",
+                    icon_url="https://raw.githubusercontent.com/jtkick/base-discord-bot/refs/heads/develop/assets/play.png"
+                )
+            elif self._state is self.State.PAUSED:
+                embed.set_author(
+                    name="Paused",
+                    icon_url="https://raw.githubusercontent.com/jtkick/base-discord-bot/refs/heads/develop/assets/pause.png"
+                )
+            else:
+                embed = discord.Embed(
+                    title="UNKNOWN STATE", color=discord.Color.red()
+                )
+
+
+
+
             # Get and add the thumbnail
             if self._state in [self.State.PLAYING, self.State.PAUSED]:
                 embed.set_thumbnail(url=self.current.thumbnail_url)
-                embed.add_field(
-                    name="",
-                    value=(
-                        f"[{self.current.song_title}]({self.current.web_url}) - "
-                        f"{self.current.artist}"
-                    ),
-                    inline=False,
-                )
+                # embed.add_field(
+                #     name="",
+                #     value=(
+                #         f"[{self.current.song_title}]({self.current.web_url}) - "
+                #         f"{self.current.artist}"
+                #     ),
+                #     inline=False,
+                # )
 
             # Add all upcoming songs
             # Possibly dangerous, but only obvious solution
@@ -283,16 +315,19 @@ class MusicPlayer:
                 value_str = ""
                 for i, song in enumerate(queue):
                     value_str += (
-                        f"{i+1}. [{song.song_title}]({song.web_url}) -"
-                        f" {song.artist}\n"
+                        f"{i+1}. ['{song.song_title}' by {song.artist}]({song.web_url})\n"
                     )
                 embed.add_field(name="Queue", value=value_str, inline=False)
+
+            # Add 'DJ Mode' footer if on
+            if self.dj_mode:
+                embed.set_footer(text="DJ Mode", icon_url="https://raw.githubusercontent.com/jtkick/base-discord-bot/refs/heads/develop/assets/dj.png")
 
             # Build controls
             controls = discord.ui.View(timeout=None)
             # Construct 'back' button
             prev_button = discord.ui.Button(
-                label="⏮️",
+                label="⏮",
                 style=discord.ButtonStyle.secondary,
                 custom_id="prev"
             )
@@ -303,7 +338,7 @@ class MusicPlayer:
 
             # Construct 'play/pause' button
             play_button = discord.ui.Button(
-                label="▶️" if self._state is self.State.PAUSED else "⏸️",
+                label="⏵" if self._state is self.State.PAUSED else "⏸",
                 style=discord.ButtonStyle.secondary,
                 custom_id="playpause"
             )
@@ -316,7 +351,7 @@ class MusicPlayer:
 
             # Construct 'next' button
             next_button = discord.ui.Button(
-                label="⏭️",
+                label="⏭",
                 style=discord.ButtonStyle.secondary,
                 custom_id="next"
             )
@@ -393,14 +428,24 @@ class MusicPlayer:
                     "Queue is empty and DJ mode is on. Picking song at random"
                 )
                 try:
+
+                    # TEST
+                    user_ids = [m.id for m in self._channel.members]
+                    channel_ids = [c.id for c in self._channel.guild.channels]
+                    song = self.bot.db.get_next_song(users=user_ids, channels=channel_ids)
+                    search = f"{song["artist"]} {song["title"]}"
+
                     source = await YTDLSource.create_source(
                         None,
-                        random.choice(songs),
+                        search,
                         download=True,
                     )
                     if not source:
                         raise RuntimeError("Could not get YouTube source.")
                 except Exception as e:
+                    # Something's wrong, turn off DJ mode to prevent infinite
+                    # loop
+                    self.dj_mode = False
                     print(e)
                     await self._channel.send("Failed to get YouTube source.")
 
@@ -493,6 +538,11 @@ class Music(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.players = {}
+
+    # @commands.Cog.listener()
+    # async def on_ready(self):
+    #     await self.bot.tree.sync()
+    #     logger.info("Synced command tree")
 
     async def cleanup(self, guild):
         try:
@@ -656,6 +706,10 @@ class Music(commands.Cog):
             )
             await message.edit(embed=embed)
             raise e
+
+    @app_commands.command(name="hello", description="says hello")
+    async def hello(self, interaction: discord.Interaction):
+        await interaction.response.send_message("hello");
 
     @commands.command(
         name="djmode", aliases=["dj"], description="Turns DJ mode on or off."

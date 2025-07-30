@@ -15,6 +15,10 @@ Source Code:
     https://github.com/jtkick/base-discord-bot
 """
 
+
+# BOT PERMISSIONS
+# 1729383718059856
+
 PROJECT_VERSION = "0.1.0"
 
 # Standard imports
@@ -25,6 +29,7 @@ import sys
 # Third-part imports
 import discord
 from discord.ext import commands
+from discord import app_commands
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -72,6 +77,8 @@ def main():
             if filename.endswith('.py'):
                 await client.load_extension(f'cogs.{filename[:-3]}')
                 logger.info("Loaded %s cog", filename)
+        for server in client.guilds:
+            await client.tree.sync(guild=discord.Object(id=server.id))
 
     client.run(TOKEN, log_handler=None)
 

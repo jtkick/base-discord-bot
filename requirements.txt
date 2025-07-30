@@ -1,8 +1,7 @@
-discord
-discord[voice]
-ffmpeg
-python-dotenv
-yt-dlp
-async_timeout
-validators
-openai
+async_timeout==5.0.1
+discord.py==2.5.2
+openai==1.97.1
+python-dotenv==1.1.1
+Requests==2.32.4
+validators==0.34.0
+yt_dlp @ git+https://github.com/yt-dlp/yt-dlp.git@2025.07.21

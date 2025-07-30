@@ -1,9 +1,14 @@
 from datetime import datetime, timedelta
 import discord
+import logging
+import openai
+import random
 import sqlite3
 import typing
 
 from cogs import music_player
+
+logger = logging.getLogger("database")
 
 class Database:
     def __init__(self, path: str):
@@ -311,7 +316,7 @@ class Database:
             int: The row ID of the entered song. Used to update 'played' value.
         """
         user_id = self._insert_user(source.requester.id) if source.requester else None
-        channel_id = self._insert_user(channel_id)
+        channel_id = self._insert_channel(channel_id)
         # Insert the information
         with sqlite3.connect(self.path) as conn:
             cur = conn.cursor()
@@ -409,3 +414,138 @@ class Database:
         if None in activity_stats:
             del activity_stats[None]
         return activity_stats
+
+    def get_next_song(self, users: list[int], channels: list[int], limit: int = 100, cutoff: datetime = datetime.now() - timedelta(hours=1)):
+        
+        print("users:", users)
+        print("channels:", channels)
+
+        # Convert user IDs to row IDs
+        with sqlite3.connect(self.path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT
+                    id
+                FROM
+                    user
+                WHERE
+                    discord_id IN (%s);""" % ",".join("?" for _ in users),
+                tuple(users))
+            user_ids = [row[0] for row in cursor.fetchall()]
+
+            cursor.execute("""
+                SELECT
+                    id
+                FROM
+                    channel
+                WHERE
+                    discord_id IN (%s);""" % ",".join("?" for _ in channels),
+                tuple(channels))
+            channel_ids = [row[0] for row in cursor.fetchall()]
+
+            # Pull song plays from the given channels
+            logger.info("Getting past song plays")
+            cursor.execute("""
+                SELECT
+                    song_title,
+                    song_artist,
+                    COUNT(*) AS count
+                FROM
+                    song_play
+                WHERE
+                    user_id IN (%s) AND
+                    channel_id IN (%s) AND
+                    finished = 1 AND
+                    timestamp < ?
+                GROUP BY
+                    song_title,
+                    song_artist
+                ORDER BY
+                    count DESC
+                LIMIT ?;
+            """ % (
+                ",".join(str(id) for id in user_ids),
+                ",".join(str(id) for id in channel_ids)
+            ), (cutoff, limit))
+            old_song_plays = cursor.fetchall()
+
+        # Compile results into cleaner list of dicts
+        candidates = [{"title": t, "artist": a, "plays": p} for t, a, p in old_song_plays]
+        print("candidates:", candidates)
+
+        # Get recent song plays
+        logger.info("Getting recent song plays")
+        with sqlite3.connect(self.path) as conn:
+            cursor = conn.cursor()
+            # Get recent songs to avoid
+            cursor.execute("""
+                SELECT
+                    song_title,
+                    song_artist
+                FROM
+                    song_play
+                WHERE
+                    channel_id IN (%s) AND
+                    timestamp >= ?
+                GROUP BY
+                    song_title,
+                    song_artist;
+            """ % (",".join(str(id) for id in channel_ids)), (cutoff, ))
+            recent_song_plays = cursor.fetchall()
+        print("recent:", recent_song_plays)
+
+        # Remove all songs that were recently played
+        def keep(song_play: dict[str, str, int]):
+            return not (song_play["title"], song_play["artist"]) in recent_song_plays
+        candidates = list(filter(keep, candidates))
+        print("filtered candidates:", candidates)
+
+        if len(candidates) > 0:
+            candidate = random.choice(candidates)
+            return {"title": candidate["title"], "artist": candidate["artist"]}
+        # If we have no songs left to play, get a recommendation from ChatGPT
+        else:
+
+            # Get last five or so completed song plays
+            with sqlite3.connect(self.path) as conn:
+                cursor = conn.cursor()
+                # Get recent songs to avoid
+                cursor.execute("""
+                    SELECT
+                        song_title,
+                        song_artist
+                    FROM
+                        song_play
+                    WHERE
+                        channel_id IN (%s) AND
+                        finished = 1
+                    GROUP BY
+                        song_title,
+                        song_artist
+                    ORDER BY
+                        timestamp DESC
+                    LIMIT 5;
+                """ % (",".join(str(id) for id in channel_ids)))
+                last_five = cursor.fetchall()
+
+                print("last five song plays:", last_five)
+
+            setup_prompt = "I'm going to give you a list of songs and artists "\
+                           "formatted as a Python list of dicts where the "\
+                           "song title is the 'title' key and the artist is "\
+                           "the 'artist' key. I want you to return a song "\
+                           "title and artist that you would recommend based "\
+                           "on the given songs. You should give me only a bare text "\
+                           "string formatted as a Python dict where the "\
+                           "'title' key is the song title, and the 'artist' "\
+                           "key is the song's artist. Don't add anything other "\
+                           "than this dict."
+            user_prompt = []
+            completion = openai.OpenAI().chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": setup_prompt},
+                    {"role": "user", "content": str(last_five)}
+                ]
+            )
+            return eval(completion.choices[0].message.content)
