@@ -22,6 +22,7 @@ from yt_dlp import YoutubeDL
 import logging
 
 import database
+import assets
 
 logger = logging.getLogger("music_player")
 
@@ -114,14 +115,16 @@ class YTDLSource(discord.PCMVolumeTransformer):
         logger.debug("LastFM match: ", track)
         artist = track['artist']
         song_title = track['name']
+        search = f"{song_title} {artist}"
+        logger.info(f"LastFM returned: '{song_title}' by '{artist}'")
 
         # Adjust search term if we didn't get a URL
         if isinstance(search, dict) and not validators.url(search):
-            search = f"{song_title} {artist} official audio"
+            search = f"{song_title} {artist}"
             logger.debug(f"Search string is not a URL; converting to {search}")
 
         # Get YouTube video source
-        logger.info(f"Getting YouTube video: {search_term}")
+        logger.info(f"Getting YouTube video: {search}")
         to_run = partial(cls._downloader.extract_info, url=search, download=download)
         data = await loop.run_in_executor(None, to_run)
 
@@ -290,12 +293,12 @@ class MusicPlayer:
             elif self._state is self.State.PLAYING:
                 embed.set_author(
                     name="Now Playing",
-                    icon_url="https://raw.githubusercontent.com/jtkick/base-discord-bot/refs/heads/develop/assets/play.png"
+                    icon_url=assets.icons.get_icon_url(icon="media-play", color="green")
                 )
             elif self._state is self.State.PAUSED:
                 embed.set_author(
                     name="Paused",
-                    icon_url="https://raw.githubusercontent.com/jtkick/base-discord-bot/refs/heads/develop/assets/pause.png"
+                    icon_url=assets.icons.get_icon_url(icon="media-pause", color="green")
                 )
             else:
                 embed = discord.Embed(
@@ -330,7 +333,7 @@ class MusicPlayer:
 
             # Add 'DJ Mode' footer if on
             if self.dj_mode:
-                embed.set_footer(text="DJ Mode", icon_url="https://raw.githubusercontent.com/jtkick/base-discord-bot/refs/heads/develop/assets/dj.png")
+                embed.set_footer(text="DJ Mode", icon_url=assets.icons.get_icon_url(icon="headphones", color="green"))
 
             # Build controls
             controls = discord.ui.View(timeout=None)
@@ -541,6 +544,9 @@ class Music(commands.Cog):
 
     __slots__ = ("bot", "players")
 
+    # Base embeds used as templates by the music player
+    _searching = ""
+
     def __init__(self, bot):
         self.bot = bot
         self.players = {}
@@ -669,6 +675,8 @@ class Music(commands.Cog):
         Example:
             !play Play That Funky Music by Wild Cherry
         """
+        print(dir(assets))
+
         # Ensure we're connected to the proper voice channel
         vc = ctx.voice_client
         if not vc:
@@ -676,9 +684,12 @@ class Music(commands.Cog):
 
         # Send message to say we're working on it
         embed = discord.Embed(
-            title=f"🔎  Searching for:",
-            description=f"{search}",
+            title=f"{search}",
             color=discord.Color.green(),
+        )
+        embed.set_author(
+            name="Searching for:",
+            icon_url=assets.icons.get_icon_url(icon="search", color="green")
         )
         message = await ctx.channel.send(embed=embed)
 
@@ -694,12 +705,16 @@ class Music(commands.Cog):
             await player.queue(source)
             # Update previous message to show found song and video
             embed = discord.Embed(
-                title=f"Queued",
+                title=f"",
                 description=(
                     f"[{source.song_title}]({source.web_url}) -"
                     f" {source.artist}"
                 ),
                 color=discord.Color.green(),
+            )
+            embed.set_author(
+                name="Queued",
+                icon_url=assets.icons.get_icon_url(icon="line-3", color="green")
             )
             embed.set_thumbnail(url=source.thumbnail_url)
             await message.edit(embed=embed)

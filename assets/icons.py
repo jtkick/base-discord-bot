@@ -61,3 +61,7 @@ def generate_pngs(svg_path: pathlib.Path, png_path: pathlib.Path):
             # Save to actual PNG file
             img.save(color_dir / f"{svg_file.stem}.png", format="PNG")
             print("new file:", color_dir / f"{svg_file.stem}.png")
+
+def get_icon_url(icon='', color=''):
+    return f"https://raw.githubusercontent.com/jtkick/base-discord-bot/refs/"\
+           f"heads/develop/assets/icons/png/{color}/{icon}.png"
