@@ -415,7 +415,7 @@ class Database:
             del activity_stats[None]
         return activity_stats
 
-    def get_next_song(self, users: list[int], channels: list[int], limit: int = 100, cutoff: datetime = None):
+    async def get_next_song(self, users: list[int], channels: list[int], limit: int = 100, cutoff: datetime = None):
         
         _cutoff = datetime.now() - timedelta(hours=1) if not cutoff else cutoff
 
@@ -504,7 +504,6 @@ class Database:
 
         if len(candidates) > 0:
             candidate = random.choice(candidates)
-            return {"title": candidate["title"], "artist": candidate["artist"]}
         # If we have no songs left to play, get a recommendation from ChatGPT
         else:
 
@@ -552,4 +551,10 @@ class Database:
                     {"role": "user", "content": str(last_five)}
                 ]
             )
-            return eval(completion.choices[0].message.content)
+            candidate = eval(completion.choices[0].message.content)
+
+        # Construct new source based on this song choice
+        source = await music_player.YTDLSource.create(f"{candidate["title"]} {candidate["artist"]}")
+        source.song_title = candidate["title"]
+        source.artist = candidate["artist"]
+        return source

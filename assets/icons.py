@@ -64,4 +64,4 @@ def generate_pngs(svg_path: pathlib.Path, png_path: pathlib.Path):
 
 def get_icon_url(icon='', color=''):
     return f"https://raw.githubusercontent.com/jtkick/base-discord-bot/refs/"\
-           f"heads/develop/assets/icons/png/{color}/{icon}.png"
+           f"heads/develop/assets/png/{color}/{icon}.png"

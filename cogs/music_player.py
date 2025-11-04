@@ -32,6 +32,7 @@ LASTFM_API_KEY = os.getenv("LASTFM_API_KEY")
 # Suppress noise about console usage from errors
 # yt_dlp.utils.bug_reports_message = lambda: ""
 
+
 class VoiceConnectionError(commands.CommandError):
     """Custom Exception class for connection errors."""
 
@@ -42,8 +43,11 @@ class InvalidVoiceChannel(VoiceConnectionError):
 
 class YTDLSource(discord.PCMVolumeTransformer):
 
+    # Whether or not to download the video before playing
+    download = False
+
     _downloader = YoutubeDL({
-        "format": "bestaudio[ext=opus]/bestaudio",   # Use OPUS for FFmpeg
+        "format": "bestaudio[ext=m4a]/bestaudio",   # Use OPUS for FFmpeg
         "outtmpl": "downloads/%(extractor)s-%(id)s-%(title)s.%(ext)s",
         "restrictfilenames": True,
         "noplaylist": True,
@@ -60,73 +64,37 @@ class YTDLSource(discord.PCMVolumeTransformer):
         "fragment_retries": 10,  # Prevents seemingly random stream crashes
     })
 
-    def __init__(self, source, *, data, requester):
+    def __init__(self, source, **kwargs):
         super().__init__(source)
-        self.requester = requester
 
         # YouTube Metadata
-        self.title = data.get("title")
-        self.web_url = data.get("webpage_url")
-        self.thumbnail_url = data.get("thumbnail")
-        self.duration = data.get("duration")
+        self.title = kwargs.get("title")
+        self.url = kwargs.get("url")
+        self.web_url = kwargs.get("web_url")
+        self.thumbnail_url = kwargs.get("thumbnail_url")
+        self.filename = kwargs.get("filename")
 
         # Song metadata
-        self.search_term = ""
-        self.artist = ""
-        self.song_title = ""
+        self.search_term = kwargs.get("search_term")
+        self.artist = kwargs.get("artist")
+        self.song_title = kwargs.get("song_title")
 
-        # YTDL info dicts (data) have other useful information you might want
-        # https://github.com/rg3/youtube-dl/blob/master/README.md
+        # Discord info
+        self.requester = kwargs.get("requester")
 
-    def __getitem__(self, item: str):
-        """Allows us to access attributes similar to a dict.
-        This is only useful when you are NOT downloading.
-        """
-        return self.__getattribute__(item)
+    def __str__(self):
+        if self.song_title and self.artist:
+            return f"'{self.song_title}' by {self.artist}"
+        else:
+            return f"{self.title}"
 
     @classmethod
-    async def create_source(cls, ctx, search: str, *, download=False):
-        loop = ctx.bot.loop if ctx else asyncio.get_event_loop()
-
-        # If we got a YouTube link, get the video title for the song search
-        logger.debug("Search parameter:", search)
-        if isinstance(search, dict):
-            search_term = search["title"]
-            artist_str = f"&artist={search["artist"]}"
-        elif isinstance(search, str) and validators.url(search):
-            with YoutubeDL() as ydl:
-                info = ydl.extract_info(search, download=False)
-                search_term = info.get("title", "")
-            artist_str = ""
-        else:
-            search_term = search
-            artist_str = ""
-
-        # Get song metadata
-        logger.info(f"Searching LastFM for: '{search_term}'")
-        url = f"http://ws.audioscrobbler.com/2.0/?method=track.search&"\
-              f"track={search_term}{artist_str}&api_key={LASTFM_API_KEY}&format=json"
-        response = requests.get(url)
-        lastfm_data = response.json()
-        # Let's get the first result, if any
-        if not lastfm_data['results']['trackmatches']['track']:
-            raise RuntimeError("LastFM returned no results")
-        track = lastfm_data['results']['trackmatches']['track'][0]
-        logger.debug("LastFM match: ", track)
-        artist = track['artist']
-        song_title = track['name']
-        search = f"{song_title} {artist}"
-        logger.info(f"LastFM returned: '{song_title}' by '{artist}'")
-
-        # Adjust search term if we didn't get a URL
-        if isinstance(search, dict) and not validators.url(search):
-            search = f"{song_title} {artist}"
-            logger.debug(f"Search string is not a URL; converting to {search}")
-
+    async def create(cls, search: str = ""):
         # Get YouTube video source
         logger.info(f"Getting YouTube video: {search}")
-        to_run = partial(cls._downloader.extract_info, url=search, download=download)
-        data = await loop.run_in_executor(None, to_run)
+        to_run = partial(cls._downloader.extract_info,
+                         url=search, download=cls.download)
+        data = await asyncio.get_event_loop().run_in_executor(None, to_run)
 
         # There's an error with yt-dlp that throws a 403: Forbidden error, so
         # only proceed if it returns anything
@@ -135,25 +103,146 @@ class YTDLSource(discord.PCMVolumeTransformer):
             data = data["entries"][0]
 
         # Get either source filename or URL, depending on if we're downloading
-        if download:
+        if cls.download:
             source = cls._downloader.prepare_filename(data)
         else:
             source = data["url"]
         logger.info(f"Using source: {data["webpage_url"]}")
 
-        ffmpeg_source = cls(
-            discord.FFmpegPCMAudio(source, before_options="-nostdin", options="-vn"),
-            data=data,
-            requester=ctx.author if ctx else None,
+        # Setup actual audio source
+        ffmpeg_source = discord.FFmpegPCMAudio(
+            source,
+            before_options="-nostdin -reconnect 1 -reconnect_streamed 1 "\
+                           "-reconnect_delay_max 5",
+            options="-vn -f s16le -ar 48000 -ac 2")
+        return cls(
+            ffmpeg_source,
+            title = data.get("title"),
+            url = data.get("url"),
+            web_url = data.get("webpage_url"),
+            thumbnail_url = data.get("thumbnail"),
+            filename = data.get("filename"),
+            search_term = search
         )
-        # TODO: ADD THESE TO THE CONSTRUCTOR
-        ffmpeg_source.search_term = search_term
-        # ffmpeg_source.song_title = data["title"]
-        ffmpeg_source.artist = artist
-        ffmpeg_source.song_title = song_title
-        ffmpeg_source.filename = source
 
-        return ffmpeg_source
+    # @classmethod
+    # async def from_url(cls, url: str = ""):
+    #     # Get the actual source
+    #     source = await cls.create(url)
+
+    #     # Get video title
+    #     to_run = partial(cls._downloader.extract_info,
+    #                      url=udl, download=cls.download)
+    #     data = await asyncio.get_event_loop().run_in_executor(None, to_run)
+
+    #     source.song_title = source['title']
+
+    @classmethod
+    async def from_search(cls, search: str = ""):
+        # Get song metadata
+        logger.info(f"Searching LastFM for: '{search}'")
+        url = f"http://ws.audioscrobbler.com/2.0/?method=track.search&"\
+            f"track={search}&api_key={LASTFM_API_KEY}&format=json"
+        response = requests.get(url)
+        lastfm_data = response.json()
+
+        # Handle errors
+        if "error" in lastfm_data:
+            raise RuntimeError(
+                f"LastFM returned error code '{lastfm_data["error"]}': "
+                f"{lastfm_data["message"]}")
+
+        # Let's get the first result, if any
+        if not lastfm_data and not lastfm_data['results'] and not lastfm_dataa['results']['trackmatches'] and not lastfm_data['results']['trackmatches']['track']:
+            raise RuntimeError("LastFM returned no results")
+        
+        track = lastfm_data['results']['trackmatches']['track'][0]
+        artist = track['artist']
+        song_title = track['name']
+        logger.info(f"LastFM returned: '{song_title}' by '{artist}'") 
+
+        # Get the actual source
+        source = await cls.create(f"{song_title} {artist} official audio")
+
+        # Add the found metadata
+        source.artist = artist
+        source.song_title = song_title
+
+        return source
+
+    # @classmethod
+    # async def create_source(cls, ctx, search: str, *, download=False):
+    #     loop = ctx.bot.loop if ctx else asyncio.get_event_loop()
+
+    #     # If we got a YouTube link, get the video title for the song search
+    #     logger.debug("Search parameter:", search)
+    #     if isinstance(search, dict):
+    #         search_term = search["title"]
+    #         artist_str = f"&artist={search["artist"]}"
+    #     elif isinstance(search, str) and validators.url(search):
+    #         with YoutubeDL() as ydl:
+    #             info = ydl.extract_info(search, download=False)
+    #             search_term = info.get("title", "")
+    #         artist_str = ""
+    #     else:
+    #         search_term = search
+    #         artist_str = ""
+
+    #     # Get song metadata
+    #     logger.info(f"Searching LastFM for: '{search_term}'")
+    #     url = f"http://ws.audioscrobbler.com/2.0/?method=track.search&"\
+    #         f"track={search_term}{artist_str}&api_key={LASTFM_API_KEY}&format=json"
+    #     response = requests.get(url)
+    #     lastfm_data = response.json()
+    #     # Let's get the first result, if any
+    #     if not lastfm_data['results']['trackmatches']['track']:
+    #         raise RuntimeError("LastFM returned no results")
+    #     track = lastfm_data['results']['trackmatches']['track'][0]
+    #     logger.debug("LastFM match: ", track)
+    #     artist = track['artist']
+    #     song_title = track['name']
+    #     search = f"{song_title} {artist}"
+    #     logger.info(f"LastFM returned: '{song_title}' by '{artist}'")
+
+    #     # Adjust search term if we didn't get a URL
+    #     if isinstance(search, dict) and not validators.url(search):
+    #         search = f"{song_title} {artist}"
+    #         logger.debug(f"Search string is not a URL; converting to {search}")
+
+    #     # Get YouTube video source
+    #     logger.info(f"Getting YouTube video: {search}")
+    #     to_run = partial(cls._downloader.extract_info,
+    #                      url=search, download=download)
+    #     data = await loop.run_in_executor(None, to_run)
+
+    #     # There's an error with yt-dlp that throws a 403: Forbidden error, so
+    #     # only proceed if it returns anything
+    #     if data and "entries" in data:
+    #         # take first item from a playlist
+    #         data = data["entries"][0]
+
+    #     # Get either source filename or URL, depending on if we're downloading
+    #     if download:
+    #         source = cls._downloader.prepare_filename(data)
+    #     else:
+    #         source = data["url"]
+    #     logger.info(f"Using source: {data["webpage_url"]}")
+
+    #     ffmpeg_source = cls(
+    #         discord.FFmpegPCMAudio(
+    #             source, before_options="-nostdin", options="-vn"),
+    #         data=data,
+    #         requester=ctx.author if ctx else None,
+    #     )
+    #     # TODO: ADD THESE TO THE CONSTRUCTOR
+    #     ffmpeg_source.search_term = search_term
+    #     # ffmpeg_source.song_title = data["title"]
+    #     ffmpeg_source.artist = artist
+    #     ffmpeg_source.song_title = song_title
+    #     ffmpeg_source.filename = source
+
+    #     return ffmpeg_source
+
 
 class MusicPlayer:
     """
@@ -193,9 +282,9 @@ class MusicPlayer:
     _guild_lock = asyncio.Lock()
 
     class State(enum.Enum):
-        IDLE=1
-        PLAYING=2
-        PAUSED=3
+        IDLE = 1
+        PLAYING = 2
+        PAUSED = 3
 
     def __init__(self, ctx: discord.ext.commands.Context):
         """
@@ -214,7 +303,7 @@ class MusicPlayer:
         self._guild = ctx.guild
         self._channel = ctx.channel
         self._cog = ctx.cog
-        self._np = None # 'Now Playing' message
+        self._np = None  # 'Now Playing' message
 
         self._state = self.State.IDLE
 
@@ -248,24 +337,6 @@ class MusicPlayer:
         logger.info("Updating 'Now Playing' message")
         await self.bot.wait_until_ready()
         async with self._guild_lock:
-            # # Create new 'Now Playing' message
-            # if self._state is self.State.IDLE:
-            #     embed = discord.Embed(
-            #         title=f"◻️  Idle", color=discord.Color.light_gray()
-            #     )
-            # elif self._state is self.State.PLAYING:
-            #     embed = discord.Embed(
-            #         title=f"▶️  Now Playing", color=discord.Color.blue()
-            #     )
-            # elif self._state is self.State.PAUSED:
-            #     embed = discord.Embed(
-            #         title=f"⏸️  Paused", color=discord.Color.light_gray()
-            #     )
-            # else:
-            #     embed = discord.Embed(
-            #         title="UNKNOWN STATE", color=discord.Color.red()
-            #     )
-
             # Create new 'Now Playing' message
             if self._state is self.State.IDLE:
                 embed = discord.Embed(
@@ -273,13 +344,15 @@ class MusicPlayer:
                 )
             elif self._state is self.State.PLAYING:
                 embed = discord.Embed(
-                    title=f"'{self.current.song_title}' by {self.current.artist}",
+                    title=str(self.current),
+                    #title=f"'{self.current.song_title}' by {self.current.artist}",
                     url=self.current.web_url,
                     color=discord.Color.green()
                 )
             elif self._state is self.State.PAUSED:
                 embed = discord.Embed(
-                    title=f"'{self.current.song_title}' by {self.current.artist}",
+                    title=str(self.current),
+                    #title=f"'{self.current.song_title}' by {self.current.artist}",
                     url=self.current.web_url,
                     color=discord.Color.green()
                 )
@@ -293,20 +366,19 @@ class MusicPlayer:
             elif self._state is self.State.PLAYING:
                 embed.set_author(
                     name="Now Playing",
-                    icon_url=assets.icons.get_icon_url(icon="media-play", color="green")
+                    icon_url=assets.icons.get_icon_url(
+                        icon="media-play", color="green")
                 )
             elif self._state is self.State.PAUSED:
                 embed.set_author(
                     name="Paused",
-                    icon_url=assets.icons.get_icon_url(icon="media-pause", color="green")
+                    icon_url=assets.icons.get_icon_url(
+                        icon="media-pause", color="green")
                 )
             else:
                 embed = discord.Embed(
                     title="UNKNOWN STATE", color=discord.Color.red()
                 )
-
-
-
 
             # Get and add the thumbnail
             if self._state in [self.State.PLAYING, self.State.PAUSED]:
@@ -327,13 +399,16 @@ class MusicPlayer:
                 value_str = ""
                 for i, song in enumerate(queue):
                     value_str += (
-                        f"{i+1}. ['{song.song_title}' by {song.artist}]({song.web_url})\n"
+                        f"{i+1}. [{str(song)}]({song.web_url})\n"
                     )
                 embed.add_field(name="Queue", value=value_str, inline=False)
 
             # Add 'DJ Mode' footer if on
             if self.dj_mode:
-                embed.set_footer(text="DJ Mode", icon_url=assets.icons.get_icon_url(icon="headphones", color="green"))
+                print("dj icon url: ", assets.icons.get_icon_url(
+                    icon="headphones", color="green"))
+                embed.set_footer(text="DJ Mode", icon_url=assets.icons.get_icon_url(
+                    icon="headphones", color="green"))
 
             # Build controls
             controls = discord.ui.View(timeout=None)
@@ -343,9 +418,9 @@ class MusicPlayer:
                 style=discord.ButtonStyle.secondary,
                 custom_id="prev"
             )
-            #prev_button.disabled = self._player.current
+            # prev_button.disabled = self._player.current
             prev_button.disabled = True
-            #prev_button.callback = 
+            # prev_button.callback =
             controls.add_item(prev_button)
 
             # Construct 'play/pause' button
@@ -378,19 +453,21 @@ class MusicPlayer:
             else:
                 if self._np:
                     self._np = await self._np.delete()
-                self._np = await self._channel.send(embed=embed, view=controls)        
-    
+                self._np = await self._channel.send(embed=embed, view=controls)
+
     async def resume(self, interaction: discord.Interaction = None):
-        if interaction: await interaction.response.defer()
+        if interaction:
+            await interaction.response.defer()
         vc = self._guild.voice_client
         if not vc or not vc.is_connected():
             return
         if vc.is_paused():
             vc.resume()
             await self._change_state(self.State.PLAYING)
-    
+
     async def pause(self, interaction: discord.Interaction = None):
-        if interaction: await interaction.response.defer()
+        if interaction:
+            await interaction.response.defer()
         vc = self._guild.voice_client
         if not vc or not vc.is_connected():
             return
@@ -402,7 +479,8 @@ class MusicPlayer:
         pass
 
     async def next(self, interaction: discord.Interaction = None):
-        if interaction: await interaction.response.defer()
+        if interaction:
+            await interaction.response.defer()
         vc = self._guild.voice_client
         if not vc.is_playing() and not vc.is_paused():
             return
@@ -442,19 +520,14 @@ class MusicPlayer:
                 try:
                     user_ids = [m.id for m in self._channel.members]
                     channel_ids = [c.id for c in self._channel.guild.channels]
-                    song = self.bot.db.get_next_song(users=user_ids, channels=channel_ids)
-
-                    source = await YTDLSource.create_source(
-                        None,
-                        song,
-                        download=True,
-                    )
+                    source = await self.bot.db.get_next_song(
+                        users=user_ids, channels=channel_ids)
                     if not source:
                         raise RuntimeError("Could not get YouTube source.")
                 except Exception as e:
                     # # Something's wrong, turn off DJ mode to prevent infinite
                     # # loop
-                    # self.dj_mode = False
+                    self.dj_mode = False
                     logger.error(e)
                     # await self._channel.send(str(e))
 
@@ -465,25 +538,12 @@ class MusicPlayer:
             if source is None:
                 continue
 
-            if not isinstance(source, YTDLSource):
-                # Source was probably a stream (not downloaded)
-                # So we should regather to prevent stream expiration
-                try:
-                    source = await YTDLSource.regather_stream(
-                        source, loop=self.bot.loop
-                    )
-                except Exception as e:
-                    await self._channel.send(
-                        "There was an error processing your"
-                        f" song.\n```css\n[{e}]\n```"
-                    )
-                    continue
-
             source.volume = self.volume
             self.current = source
 
             logger.info(f"Playing '{source.song_title}' by '{source.artist}'")
             row_id = self.bot.db.insert_song_play(self._channel.id, source)
+
             def song_finished(error):
                 # Update database to reflect song finishing
                 if not error:
@@ -516,7 +576,7 @@ class MusicPlayer:
             await self._change_state(self.State.PLAYING)
             await self._next.wait()
 
-            if os.path.exists(source.filename):
+            if source.filename and os.path.exists(source.filename):
                 os.remove(source.filename)
 
             # Make sure the FFmpeg process is cleaned up.
@@ -695,9 +755,11 @@ class Music(commands.Cog):
 
         # Create source
         try:
-            source = await YTDLSource.create_source(
-                ctx, search, download=True
-            )
+            if not validators.url(search):
+                source = await YTDLSource.from_search(search)
+            else:
+                source = await YTDLSource.create(search)
+            source.requester = ctx.author
             # Track song requests in database
             self.bot.db.insert_song_request(message, source)
             # Add song to the corresponding player object
@@ -707,14 +769,14 @@ class Music(commands.Cog):
             embed = discord.Embed(
                 title=f"",
                 description=(
-                    f"[{source.song_title}]({source.web_url}) -"
-                    f" {source.artist}"
+                    f"[{str(source)}]({source.web_url})"
                 ),
                 color=discord.Color.green(),
             )
             embed.set_author(
                 name="Queued",
-                icon_url=assets.icons.get_icon_url(icon="line-3", color="green")
+                icon_url=assets.icons.get_icon_url(
+                    icon="line-3", color="green")
             )
             embed.set_thumbnail(url=source.thumbnail_url)
             await message.edit(embed=embed)
@@ -730,7 +792,7 @@ class Music(commands.Cog):
 
     @app_commands.command(name="hello", description="says hello")
     async def hello(self, interaction: discord.Interaction):
-        await interaction.response.send_message("hello");
+        await interaction.response.send_message("hello")
 
     @commands.command(
         name="djmode", aliases=["dj"], description="Turns DJ mode on or off."
@@ -869,7 +931,7 @@ class Music(commands.Cog):
     async def clear_(self, ctx):
         """
         Deletes entire queue of upcoming songs.
-        
+
         Args:
             ctx (discord.ext.commands.Context): The Discord context associated
                 with the message.
@@ -954,7 +1016,7 @@ class Music(commands.Cog):
         Args:
             ctx (discord.ext.commands.Context): The Discord context associated
                 with the message.
-        
+
         Notes:
             This will destroy the player assigned to your guild, also deleting
             any queued songs and settings.
