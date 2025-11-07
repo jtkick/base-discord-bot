@@ -742,6 +742,10 @@ class Music(commands.Cog):
         if not vc:
             await ctx.invoke(self.connect_)
 
+        # Ignore empty search term
+        if not search:
+            return
+
         # Send message to say we're working on it
         embed = discord.Embed(
             title=f"{search}",
@@ -888,7 +892,6 @@ class Music(commands.Cog):
     )
     async def remove_(self, ctx, pos: int = None):
         """Removes specified song from queue"""
-
         vc = ctx.voice_client
 
         if not vc or not vc.is_connected():
