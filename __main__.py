@@ -7,7 +7,7 @@ This program provides a bot that plays music in a voice chat and fulfills other
 commands in text channels.
 
 Author: Jared Kick <jaredkick@gmail.com>
-Version: 0.1.0
+Version: 0.2.2
 
 For detailed documentation, please refer to:
     <url>
@@ -19,7 +19,7 @@ Source Code:
 # BOT PERMISSIONS
 # 1729383718059856
 
-PROJECT_VERSION = "0.1.0"
+PROJECT_VERSION = "0.2.2"
 
 # Standard imports
 import logging
@@ -36,6 +36,23 @@ from openai import OpenAI
 # Project imports
 import database
 
+class BaseDiscordBot(commands.Bot):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.db = database.Database("basediscordbot.db")
+        self.logger = logging.getLogger("basediscordbot")
+        self.add_listener(self._load_cogs, 'on_ready')
+    
+    async def _load_cogs(self):
+        self.logger.info("Loading cogs...")
+        directory = os.path.dirname(os.path.abspath(__file__))
+        for filename in os.listdir(f'{directory}/cogs'):
+            if filename.endswith('.py'):
+                await self.load_extension(f'cogs.{filename[:-3]}')
+                self.logger.info("Loaded %s cog", filename)
+        for server in self.guilds:
+            await self.tree.sync(guild=discord.Object(id=server.id))
+
 def main():
     # Create custom logging handler
     console_handler = logging.StreamHandler(sys.stdout)
@@ -47,39 +64,19 @@ def main():
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
     root_logger.addHandler(console_handler)
-
-    # Get bot logger
-    logger = logging.getLogger("basediscordbot")
-
+    
     # Load credentials
     load_dotenv()
     TOKEN = os.getenv('DISCORD_TOKEN')
 
-    # Create custom bot with database connection
-    class BaseDiscordBot(commands.Bot):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            self.db = database.Database("basediscordbot.db")
-            self.ai = OpenAI()
+    # Create bot
     client = BaseDiscordBot(
         command_prefix = '!',
         intents=discord.Intents.all(),
         log_hander=False
     )
 
-    # Load all bot cogs in directory
-    # You need to import os for this method
-    @client.event
-    async def on_ready():
-        logger.info("%s is now running", client.user)
-        # Load cogs
-        for filename in os.listdir('./cogs'):
-            if filename.endswith('.py'):
-                await client.load_extension(f'cogs.{filename[:-3]}')
-                logger.info("Loaded %s cog", filename)
-        for server in client.guilds:
-            await client.tree.sync(guild=discord.Object(id=server.id))
-
+    # Run bot
     client.run(TOKEN, log_handler=None)
 
 if __name__ == "__main__":
