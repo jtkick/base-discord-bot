@@ -7,7 +7,7 @@ This program provides a bot that plays music in a voice chat and fulfills other
 commands in text channels.
 
 Author: Jared Kick <jaredkick@gmail.com>
-Version: 0.2.2
+Version: 0.2.1
 
 For detailed documentation, please refer to:
     <url>
@@ -19,7 +19,7 @@ Source Code:
 # BOT PERMISSIONS
 # 1729383718059856
 
-PROJECT_VERSION = "0.2.2"
+PROJECT_VERSION = "0.2.1"
 
 # Standard imports
 import logging
